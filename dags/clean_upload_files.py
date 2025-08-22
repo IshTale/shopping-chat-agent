@@ -11,6 +11,7 @@ from airflow import DAG
 from airflow.decorators import dag, task
 import gzip
 import csv
+from azure.data.tables import TableServiceClient
 
 s3_bucket_name = 'amazon-berkeley-objects'
 s3 = boto3.client('s3', config=boto3.session.Config(signature_version=botocore.UNSIGNED))
@@ -126,6 +127,7 @@ def download_json_files():
 
 @task(dag=dag)
 def unzip_files():
+    table_service_client = TableServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
     # download metatadata file in temp directory
@@ -141,7 +143,14 @@ def unzip_files():
     with open('/tmp/metadata.csv', 'r') as f:
         reader = csv.DictReader(f)
         rows = list(reader)
-    table_service_client = blob_service_client.get_table_client("metadata")
+    
+    table_name = 'product_metadata'
+    try:
+        table_service_client.create_table(table_name)
+    except Exception as e:
+        print(f"Table {table_name} already exists or could not be created: {e}")
+    table_client = table_service_client.get_table_client(table_name)
+    # Insert rows into Azure Table Storage
     i = 0
     for row in rows:
         entity = {
@@ -154,7 +163,7 @@ def unzip_files():
         }
         i += 1
         try:
-            table_service_client.insert_entity(entity)
+            table_client.insert_entity(entity)
         except:
             continue
     # download json files in temp directory
@@ -182,23 +191,87 @@ def clean_json_files():
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
     
+    # Create temporary directory for downloads
+    temp_dir = '/tmp/listings'
+    os.makedirs(temp_dir, exist_ok=True)
+
     # Download and clean JSON files
     json_files = glob.glob('/tmp/listings/*.json')
     for json_file in json_files:
         with open(json_file, 'r') as f:
             data = json.load(f)
         
-        # Perform cleaning operations (example: remove empty fields)
-        cleaned_data = {k: v for k, v in data.items() if v is not None and v != ''}
+        # Initialize cleaned data with required fields
+        cleaned_data = {
+            'main_image_id': data.get('main_image_id', ''),
+            'item_id': data.get('item_id', ''),
+            'domain_name': data.get('domain_name', '')
+        }
 
-        # Append all text fields into a single 'text' field
-        text_fields = ["bullet_point", "color", "fabric_type", "finish_type", "item_dimensions", "item_name", "item_shape", "item_weight", "material", "model_name", "model_number", "model_year", "pattern", "product_description", ]
-        combined_text = ""
-        if 'item_name' in cleaned_data:
-            combined_text += cleaned_data['item_name'] + ". "
-        if "product_description" in cleaned_data:
-            cleaned_data["product_description"] = cleaned_data["product_description"].replace("\n", " ").replace("\r", "").replace("\t", " ").replace("<p>", "").replace("</p>", "").replace('\\', '')
-            combined_text += cleaned_data["product_description"] + ". "
+        # Initialize combined text
+        combined_text = []
+
+        # Fields to extract text from
+        text_fields = {
+            "bullet_point": "value",
+            "color": "value",
+            "fabric_type": "value",
+            "finish_type": "value",
+            "item_name": "value",
+            "item_shape": "value",
+            "material": "value",
+            "model_name": "value",
+            "model_number": "value",
+            "product_description": "value",
+            "pattern": "value",
+            "style": "value"
+        }
+
+        # Extract text from each field
+        for field, value_key in text_fields.items():
+            if field in data:
+                if isinstance(data[field], list):
+                    for item in data[field]:
+                        if isinstance(item, dict) and value_key in item:
+                            text = str(item[value_key])
+                            # Clean the text
+                            text = text.replace("\n", " ").replace("\r", "").replace("\t", " ")
+                            text = text.replace("<p>", "").replace("</p>", "").replace('\\', '')
+                            if text.strip():
+                                combined_text.append(text)
+
+        # Add item dimensions if available
+        if 'item_dimensions' in data:
+            dims = data['item_dimensions']
+            if isinstance(dims, dict):
+                dim_text = []
+                for dim_type in ['height', 'width', 'length']:
+                    if dim_type in dims:
+                        try:
+                            value = dims[dim_type].get('value', '')
+                            unit = dims[dim_type].get('unit', '')
+                            if value and unit:
+                                dim_text.append(f"{dim_type}: {value} {unit}")
+                        except (KeyError, AttributeError):
+                            continue
+                if dim_text:
+                    combined_text.append("Dimensions: " + ", ".join(dim_text))
+
+        # Add item weight if available
+        if 'item_weight' in data and isinstance(data['item_weight'], list):
+            for weight in data['item_weight']:
+                try:
+                    value = weight.get('value', '')
+                    unit = weight.get('unit', '')
+                    if value and unit:
+                        combined_text.append(f"Weight: {value} {unit}")
+                        break
+                except (KeyError, AttributeError):
+                    continue
+
+        # Join all text pieces with periods
+        cleaned_data['text'] = ". ".join(combined_text)
+
         # Save cleaned data back to file
         with open(json_file, 'w') as f:
             json.dump(cleaned_data, f)
@@ -213,5 +286,7 @@ def clean_json_files():
             )
         print(f"Uploaded cleaned {os.path.basename(json_file)} to Azure Blob Storage")
 
+    # Cleanup
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
-download_json_files() >> unzip_files()
+download_json_files() >> unzip_files() >> clean_json_files()
