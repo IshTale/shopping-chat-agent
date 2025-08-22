@@ -202,86 +202,115 @@ def clean_json_files():
     temp_dir = '/tmp/listings'
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Download and clean JSON files
+    # Download JSON files from Azure Blob Storage
+    json_blobs = container_client.list_blobs(name_starts_with="listings/")
+    for blob in json_blobs:
+        if blob.name.endswith('.json'):
+            json_blob = container_client.get_blob_client(blob)
+            with open(os.path.join(temp_dir, os.path.basename(blob.name)), "wb") as download_file:
+                download_file.write(json_blob.download_blob().readall())
+
+    # Clean JSON files
     json_files = glob.glob('/tmp/listings/*.json')
     for json_file in json_files:
         with open(json_file, 'r') as f:
-            data = json.load(f)
+            file_data = []
+            try:
+                # Try to load multiple JSON objects
+                for line in f:
+                    if line.strip():  # Skip empty lines
+                        file_data.append(json.loads(line))
+            except json.JSONDecodeError:
+                # If the above fails, try loading as a single JSON
+                f.seek(0)  # Reset file pointer to beginning
+                file_data = [json.load(f)]
         
-        # Initialize cleaned data with required fields
-        cleaned_data = {
-            'main_image_id': data.get('main_image_id', ''),
-            'item_id': data.get('item_id', ''),
-            'domain_name': data.get('domain_name', '')
-        }
+        # Process each JSON object in the file
+        cleaned_objects = []
+        for data in file_data:
+            # Initialize cleaned data with required fields
+            cleaned_data = {
+                'main_image_id': data.get('main_image_id', ''),
+                'item_id': data.get('item_id', ''),
+                'domain_name': data.get('domain_name', '')
+            }
 
-        # Initialize combined text
-        combined_text = []
+            # Initialize combined text for this object
+            combined_text = []
 
-        # Fields to extract text from
-        text_fields = {
-            "bullet_point": "value",
-            "color": "value",
-            "fabric_type": "value",
-            "finish_type": "value",
-            "item_name": "value",
-            "item_shape": "value",
-            "material": "value",
-            "model_name": "value",
-            "model_number": "value",
-            "product_description": "value",
-            "pattern": "value",
-            "style": "value"
-        }
+            # Fields to extract text from
+            text_fields = {
+                "bullet_point": "value",
+                "color": "value",
+                "fabric_type": "value",
+                "finish_type": "value",
+                "item_name": "value",
+                "item_shape": "value",
+                "material": "value",
+                "model_name": "value",
+                "model_number": "value",
+                "product_description": "value",
+                "pattern": "value",
+                "style": "value"
+            }
 
-        # Extract text from each field
-        for field, value_key in text_fields.items():
-            if field in data:
-                if isinstance(data[field], list):
-                    for item in data[field]:
-                        if isinstance(item, dict) and value_key in item:
-                            text = str(item[value_key])
-                            # Clean the text
-                            text = text.replace("\n", " ").replace("\r", "").replace("\t", " ")
-                            text = text.replace("<p>", "").replace("</p>", "").replace('\\', '')
-                            if text.strip():
-                                combined_text.append(text)
+            # Extract text from each field
+            for field, value_key in text_fields.items():
+                if field in data:
+                    if isinstance(data[field], list):
+                        for item in data[field]:
+                            if isinstance(item, dict) and value_key in item:
+                                text = str(item[value_key])
+                                # Clean the text
+                                text = text.replace("\n", " ").replace("\r", "").replace("\t", " ")
+                                text = text.replace("<p>", "").replace("</p>", "").replace('\\', '')
+                                if text.strip():
+                                    combined_text.append(text)
 
-        # Add item dimensions if available
-        if 'item_dimensions' in data:
-            dims = data['item_dimensions']
-            if isinstance(dims, dict):
-                dim_text = []
-                for dim_type in ['height', 'width', 'length']:
-                    if dim_type in dims:
+            # Add item dimensions if available
+            if 'item_dimensions' in data:
+                dims = data['item_dimensions']
+                if isinstance(dims, dict):
+                    dim_text = []
+                    for dim_type in ['height', 'width', 'length']:
+                        if dim_type in dims:
+                            try:
+                                value = dims[dim_type].get('value', '')
+                                unit = dims[dim_type].get('unit', '')
+                                if value and unit:
+                                    dim_text.append(f"{dim_type}: {value} {unit}")
+                            except (KeyError, AttributeError):
+                                continue
+                    if dim_text:
+                        combined_text.append("Dimensions: " + ", ".join(dim_text))
+
+            # Add item weight if available
+            if 'item_weight' in data:
+                weights = data['item_weight']
+                if isinstance(weights, list):
+                    for weight in weights:
                         try:
-                            value = dims[dim_type].get('value', '')
-                            unit = dims[dim_type].get('unit', '')
+                            value = weight.get('value', '')
+                            unit = weight.get('unit', '')
                             if value and unit:
-                                dim_text.append(f"{dim_type}: {value} {unit}")
+                                combined_text.append(f"Weight: {value} {unit}")
+                                break  # Only take the first valid weight
                         except (KeyError, AttributeError):
                             continue
-                if dim_text:
-                    combined_text.append("Dimensions: " + ", ".join(dim_text))
 
-        # Add item weight if available
-        if 'item_weight' in data and isinstance(data['item_weight'], list):
-            for weight in data['item_weight']:
-                try:
-                    value = weight.get('value', '')
-                    unit = weight.get('unit', '')
-                    if value and unit:
-                        combined_text.append(f"Weight: {value} {unit}")
-                        break
-                except (KeyError, AttributeError):
-                    continue
+            # Join all text pieces with periods
+            cleaned_data['text'] = ". ".join(combined_text)
+            cleaned_objects.append(cleaned_data)
 
-        # Join all text pieces with periods
-        cleaned_data['text'] = ". ".join(combined_text)
-
-        # Save cleaned data back to file
+        # Save all cleaned data objects back to file
         with open(json_file, 'w') as f:
-            json.dump(cleaned_data, f)
+            if len(cleaned_objects) == 1:
+                # If there was only one object, store as a single JSON
+                json.dump(cleaned_objects[0], f)
+            else:
+                # If there were multiple objects, store as JSONL
+                for obj in cleaned_objects:
+                    f.write(json.dumps(obj) + '\n')
         
         # Upload cleaned file back to Azure Blob Storage
         blob_client = container_client.get_blob_client(f"listings/cleaned/{os.path.basename(json_file)}")
