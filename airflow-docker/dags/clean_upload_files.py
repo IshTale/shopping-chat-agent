@@ -79,7 +79,6 @@ def download_json_files():
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
 
-    # Process images based on hierarchical structure
     blob_client = container_client.get_blob_client("metadata/metadata.csv.gz")
     with open(local_metadata_path, "rb") as data:
         blob_client.upload_blob(
@@ -167,6 +166,14 @@ def unzip_files():
         except:
             continue
     # download json files in temp directory
+    json_blobs = container_client.list_blobs(name_starts_with="listings/")
+    os.makedirs('/tmp/listings', exist_ok=True)
+    for blob in json_blobs:
+        if blob.name.endswith('.json.gz'):
+            json_blob = container_client.get_blob_client(blob)
+            with open(f"/tmp/listings/{os.path.basename(blob.name)}", "wb") as download_file:
+                download_file.write(json_blob.download_blob().readall())
+    # Unzip json files
     json_files = glob.glob('/tmp/listings/*.json.gz')
     for json_file in json_files:
         with gzip.open(json_file, 'rb') as f_in:
