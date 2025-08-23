@@ -1,7 +1,7 @@
 airflow-docker/logs
     airflow-docker/plugins
     .venv
-    __pycache__/
+    airflow-docker/dags/__pycache__/
     *.pyc
     .DS_Store
     .env
