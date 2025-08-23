@@ -2,10 +2,11 @@ apache-airflow==3.0.4
 boto3
 botocore
 requests
+chromadb
 azure-storage-blob
 pandas
 sentence-transformers
-transformers
+transformers>=4.39.0,<4.50
 torch
 faiss-cpu
 langchain

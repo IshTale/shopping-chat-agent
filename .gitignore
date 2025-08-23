@@ -4,5 +4,5 @@ airflow-docker/logs
     airflow-docker/dags/__pycache__/
     *.pyc
     .DS_Store
-    .env
+    airflow-docker/.env
     .vscode
