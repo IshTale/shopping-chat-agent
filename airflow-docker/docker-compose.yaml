@@ -120,6 +120,14 @@ services:
     command: api-server
     ports:
       - "8080:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: '3'
+          memory: 15g
+        reservations:
+          cpus: '0.5'
+          memory: 1g
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s

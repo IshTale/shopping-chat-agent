@@ -31,7 +31,7 @@ default_args = {
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    'retry_delay': timedelta(minutes=2),
 }
 
 dag = DAG(
@@ -45,6 +45,8 @@ dag = DAG(
 
 @task(dag=dag)
 def download_json_files():
+    logger = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
+    logger.setLevel(logging.WARNING)
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     print("Starting the download and clean process...")
@@ -129,46 +131,53 @@ def download_json_files():
 
 @task(dag=dag)
 def unzip_files():
+    logger = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
+    logger.setLevel(logging.WARNING)
+
     table_service_client = TableServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
-    # download metatadata file in temp directory
-    metadata_blob = container_client.get_blob_client("metadata/metadata.csv.gz")
-    with open('/tmp/metadata.csv.gz', "wb") as download_file:
-        download_file.write(metadata_blob.download_blob().readall())
-    gzip_file_path = '/tmp/metadata.csv.gz'
-    with gzip.open(gzip_file_path, 'rb') as f_in:
-        with open('/tmp/metadata.csv', 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-    print("Metadata file downloaded and decompressed successfully.")
-    # Add metadata csv to Azure Table Storage
-    with open('/tmp/metadata.csv', 'r') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    # # download metatadata file in temp directory
+    # metadata_blob = container_client.get_blob_client("metadata/metadata.csv.gz")
+    # with open('/tmp/metadata.csv.gz', "wb") as download_file:
+    #     download_file.write(metadata_blob.download_blob().readall())
+    # gzip_file_path = '/tmp/metadata.csv.gz'
+    # with gzip.open(gzip_file_path, 'rb') as f_in:
+    #     with open('/tmp/metadata.csv', 'wb') as f_out:
+    #         shutil.copyfileobj(f_in, f_out)
+    # print("Metadata file downloaded and decompressed successfully.")
+    # # Add metadata csv to Azure Table Storage
+    # with open('/tmp/metadata.csv', 'r') as f:
+    #     reader = csv.DictReader(f)
+    #     rows = list(reader)
     
-    table_name = 'ProductMetadata'
-    try:
-        table_service_client.create_table(table_name)
-    except Exception as e:
-        print(f"Table {table_name} already exists or could not be created: {e}")
-    table_client = table_service_client.get_table_client(table_name)
-    # Insert rows into Azure Table Storage
-    i = 0
-    for row in rows:
-        entity = {
-            'PartitionKey': row['image_id'],  # Adjust based on your CSV structure
-            'RowKey': i,
-            'height': row['height'],  # Adjust based on your CSV structure
-            'width': row['width'],  # Adjust based on your CSV structure
-            'path' : row['path'],  # Adjust based on your CSV structure
-            # Add more columns as needed
-        }
-        i += 1
-        try:
-            table_client.insert_entity(entity)
-        except:
-            continue
+    # table_name = 'ProductMetadata'
+    # try:
+    #     table_service_client.create_table(table_name)
+    # except Exception as e:
+    #     print(f"Table {table_name} already exists or could not be created: {e}")
+    # table_client = table_service_client.get_table_client(table_name)
+    # # Insert rows into Azure Table Storage
+    # i = 0
+    # for row in rows:
+    #     entity = {
+    #         'PartitionKey': row['image_id'],  # Adjust based on your CSV structure
+    #         'RowKey': "0",
+    #         'height': row['height'],  # Adjust based on your CSV structure
+    #         'width': row['width'],  # Adjust based on your CSV structure
+    #         'path' : row['path'],  # Adjust based on your CSV structure
+    #         # Add more columns as needed
+    #     }
+    #     try:
+    #         table_client.create_entity(entity)
+    #     except:
+    #         continue
+    #     finally:
+    #         i += 1
+    #         if i % 5000 == 0:
+    #             print(f"Inserted {i} entities into the table...")
     # download json files in temp directory
+    print("Downloading JSON files from Azure Blob Storage...")
     json_blobs = container_client.list_blobs(name_starts_with="listings/")
     os.makedirs('/tmp/listings', exist_ok=True)
     for blob in json_blobs:
@@ -186,6 +195,7 @@ def unzip_files():
     # Upload unzipped files back to Azure Blob Storage
     for file in os.listdir('/tmp/listings'):
         if file.endswith('.json'):
+            
             blob_client = container_client.get_blob_client(f"listings/{file}")
             with open(os.path.join('/tmp/listings', file), "rb") as data:
                 blob_client.upload_blob(
@@ -198,13 +208,16 @@ def unzip_files():
 
 @task(dag=dag)
 def clean_json_files():
+    logger = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
+    logger.setLevel(logging.WARNING)
+
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
     
     # Create temporary directory for downloads
     temp_dir = '/tmp/listings'
     os.makedirs(temp_dir, exist_ok=True)
-
+    print("Downloading JSON files from Azure Blob Storage for cleaning...")
     # Download JSON files from Azure Blob Storage
     json_blobs = container_client.list_blobs(name_starts_with="listings/")
     for blob in json_blobs:
@@ -212,6 +225,7 @@ def clean_json_files():
             json_blob = container_client.get_blob_client(blob)
             with open(os.path.join(temp_dir, os.path.basename(blob.name)), "wb") as download_file:
                 download_file.write(json_blob.download_blob().readall())
+                print(f"Downloaded {blob.name} for cleaning.")
 
     # Clean JSON files
     json_files = glob.glob('/tmp/listings/*.json')
@@ -227,7 +241,7 @@ def clean_json_files():
                 # If the above fails, try loading as a single JSON
                 f.seek(0)  # Reset file pointer to beginning
                 file_data = [json.load(f)]
-        
+        print(file_data[0])
         # Process each JSON object in the file
         cleaned_objects = []
         for data in file_data:
@@ -265,6 +279,9 @@ def clean_json_files():
                             if isinstance(item, dict) and value_key in item:
                                 text = str(item[value_key])
                                 # Clean the text
+                                if isinstance(text, list):
+                                    text = " ".join(map(str, text))  # Join list elements into a single string
+
                                 text = text.replace("\n", " ").replace("\r", "").replace("\t", " ")
                                 text = text.replace("<p>", "").replace("</p>", "").replace('\\', '')
                                 if text.strip():
@@ -302,7 +319,18 @@ def clean_json_files():
                             continue
 
             # Join all text pieces with periods
-            cleaned_data['text'] = ". ".join(combined_text)
+            # Ensure `text` field is not empty
+            if combined_text:
+                cleaned_data['text'] = ". ".join(combined_text)
+            else:
+                # Add debugging logs to identify why `combined_text` is empty
+                logger.warning(f"No text extracted for item_id: {data.get('item_id', 'unknown')}")
+                # Fallback: Use other fields to populate `text`
+                fallback_text = []
+                for key in ['main_image_id', 'item_id', 'domain_name']:
+                    if data.get(key):
+                        fallback_text.append(f"{key}: {data[key]}")
+                cleaned_data['text'] = ". ".join(fallback_text) if fallback_text else "No description available"
             cleaned_objects.append(cleaned_data)
 
         # Save all cleaned data objects back to file
@@ -316,7 +344,7 @@ def clean_json_files():
                     f.write(json.dumps(obj) + '\n')
         
         # Upload cleaned file back to Azure Blob Storage
-        blob_client = container_client.get_blob_client(f"listings/cleaned/{os.path.basename(json_file)}")
+        blob_client = container_client.get_blob_client(f"listings_cleaned/{os.path.basename(json_file)}")
         with open(json_file, "rb") as data:
             blob_client.upload_blob(
                 data,
@@ -328,19 +356,25 @@ def clean_json_files():
     # Cleanup
     shutil.rmtree(temp_dir, ignore_errors=True)
 
+@task(dag=dag)
 def add_image_descriptions():
     table_service_client = TableServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     table_client = table_service_client.get_table_client('ProductMetadata')
     blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+    logger = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
+    logger.setLevel(logging.WARNING)
 
+
+    print("Loading Florence-2 model and processor...")
     device = "cpu"
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-large", torch_dtype=torch_dtype, trust_remote_code=True).to(device)
+    model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True).to(device)
     processor = AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
+    print("Model and processor loaded successfully.")
 
     # download JSON files in temp directory
-    json_blobs = container_client.list_blobs(name_starts_with="listings/cleaned/")
+    print("Downloading cleaned JSON files from Azure Blob Storage...")
+    json_blobs = container_client.list_blobs(name_starts_with="listings_cleaned/")
     os.makedirs('/tmp/cleaned_listings', exist_ok=True)
     for blob in json_blobs:
         if blob.name.endswith('.json'):
@@ -348,7 +382,10 @@ def add_image_descriptions():
             with open(f"/tmp/cleaned_listings/{os.path.basename(blob.name)}", "wb") as download_file:
                 download_file.write(json_blob.download_blob().readall())
     # Add image descriptions to cleaned json files
+    print("Adding image descriptions to cleaned JSON files...")
     json_files = glob.glob('/tmp/cleaned_listings/*.json')
+    print(f"Found {len(json_files)} cleaned JSON files to process for image descriptions.")
+    i = 0
     for json_file in json_files:
         with open(json_file, 'r') as f:
             file_data = []
@@ -362,19 +399,22 @@ def add_image_descriptions():
                 f.seek(0)
                 file_data = [json.load(f)]
         # Process each JSON object in the file
-        for data in file_data:
+        for data in file_data:  
             image_id = data.get('main_image_id', '')
+            image_path = ''
             if not image_id:
                 continue
             # Fetch image path from Azure Table Storage
             try:
-                entity = table_client.get_entity(partition_key=image_id, row_key=0)
+                entity = table_client.get_entity(partition_key=image_id, row_key="0")
                 image_path = entity.get('path', '')
+                image_path = "images/original/" + image_path
             except Exception as e:
                 print(f"Error fetching metadata for image_id {image_id}: {e}")
                 continue
             if not image_path:
                 continue
+
             # Download image from S3
             local_image_path = f"/tmp/{image_id}.jpg"
             try:
@@ -382,19 +422,20 @@ def add_image_descriptions():
             except Exception as e:
                 print(f"Error downloading image {image_path} from S3: {e}")
                 continue
+
             # Generate image description using Florence-2 model
-            try:
-                image = Image.open(local_image_path).convert("RGB")
-                inputs = processor(images=image, return_tensors="pt").to(device)
-                outputs = model.generate(**inputs, max_new_tokens=50)
-                description = processor.decode(outputs[0], skip_special_tokens=True)
-                data['image_description'] = description
-            except Exception as e:
-                print(f"Error generating description for image {image_id}: {e}")
-                continue
-            finally:
-                if os.path.exists(local_image_path):
-                    os.remove(local_image_path)
+            image = Image.open(local_image_path).convert("RGB")
+            inputs = processor(images=image, return_tensors="pt", text="<MORE_DETAILED_CAPTION>").to(device)
+            outputs = model.generate(**inputs, max_new_tokens=2048)
+            generated_text = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+            parsed_answer = processor.post_process_generation(generated_text, task="<MORE_DETAILED_CAPTION>", image_size=(image.width, image.height))
+            description = parsed_answer.get('<MORE_DETAILED_CAPTION>', '').strip()
+            data['text'] += f". Image description: {description}"
+            i += 1
+            if i % 10 == 0:
+                print(f"Processed {i} images for descriptions...")
+            if os.path.exists(local_image_path):
+                os.remove(local_image_path)
 
         # Save all updated data objects back to file
         with open(json_file, 'w') as f:
@@ -403,10 +444,12 @@ def add_image_descriptions():
             else:
                 for obj in file_data:
                     f.write(json.dumps(obj) + '\n')
+        print(f"Updated file {os.path.basename(json_file)} with image descriptions.")
+    
     # Upload updated files back to Azure Blob Storage
         for file in os.listdir('/tmp/cleaned_listings'):
             if file.endswith('.json'):
-                blob_client = container_client.get_blob_client(f"listings/cleaned_with_descriptions/{file}")
+                blob_client = container_client.get_blob_client(f"listings_cleaned/{file}")
                 with open(os.path.join('/tmp/cleaned_listings', file), "rb") as data:
                     blob_client.upload_blob(
                         data,
