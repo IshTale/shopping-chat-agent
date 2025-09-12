@@ -5,6 +5,7 @@ from airflow.decorators import dag, task
 from azure.storage.blob import BlobServiceClient, ContentSettings
 import json
 import chromadb
+import os
 
 default_args = {
     'owner': 'airflow',
