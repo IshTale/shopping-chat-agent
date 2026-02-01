@@ -20,8 +20,8 @@ s3_bucket_name = 'amazon-berkeley-objects'
 s3 = boto3.client('s3', config=boto3.session.Config(signature_version=botocore.UNSIGNED))
 
 # Azure Storage settings
-AZURE_STORAGE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=storefile1;AccountKey=k4B6SuLg7Vnd2QDYU/NeU9plKOLg5IAHB34YQxwVsZa7l/fbr9jhDXV94EJTItFpXnBjWa1sQXTJ+AStKf/M9g==;EndpointSuffix=core.windows.net"
-CONTAINER_NAME = "cleaned-object-data"
+AZURE_STORAGE_CONNECTION_STRING = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
+CONTAINER_NAME = os.environ["cleaned-object-data"]
 
 # Define the DAG
 default_args = {
